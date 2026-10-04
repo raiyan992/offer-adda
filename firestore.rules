@@ -1,0 +1,46 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{db}/documents {
+    function me() { return request.auth.uid; }
+    function phone() { return request.auth.token.email.split('@')[0]; }
+    function isMem(g) { return me() in get(/databases/$(db)/documents/groups/$(g)).data.members; }
+    function chatOk(g, c) {
+      let d = get(/databases/$(db)/documents/groups/$(g)/chats/$(c)).data;
+      return me() in [d.owner, d.requester];
+    }
+    match /users/{u} { allow read, write: if request.auth != null && me() == u; }
+    match /groups/{g} {
+      allow read: if me() in resource.data.members;
+      allow create: if request.resource.data.admin == me() && request.resource.data.members == [me()];
+      allow update: if resource.data.admin == me() || (
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members']) && (
+          (request.resource.data.members.toSet().difference(resource.data.members.toSet()).hasOnly([me()])
+            && exists(/databases/$(db)/documents/invites/$(g + '_' + phone())))
+          || resource.data.members.toSet().difference(request.resource.data.members.toSet()).hasOnly([me()])));
+      match /offers/{o} {
+        allow read: if isMem(g);
+        allow create: if isMem(g) && request.resource.data.postedBy == me();
+        allow update: if isMem(g) && (resource.data.postedBy == me() ||
+          (resource.data.status != 'TAKEN' && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['requests'])));
+        allow delete: if resource.data.postedBy == me();
+      }
+      match /chats/{c} {
+        allow read: if me() in [resource.data.owner, resource.data.requester];
+        allow create: if isMem(g) && request.resource.data.requester == me();
+        match /msgs/{m} {
+          allow read: if chatOk(g, c);
+          allow create: if chatOk(g, c) && request.resource.data.from == me();
+        }
+      }
+    }
+    match /invites/{i} {
+      allow read, delete: if request.auth != null && resource.data.phone == phone();
+      allow create: if get(/databases/$(db)/documents/groups/$(request.resource.data.groupId)).data.admin == me();
+    }
+    match /notifs/{n} {
+      allow read, update: if resource.data.to == me();
+      allow create: if request.resource.data.from == me();
+    }
+    match /reports/{r} { allow create: if request.auth != null; }
+  }
+}
